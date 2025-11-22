@@ -1,7 +1,9 @@
 #include <Wire.h>
 
+#include "Adafruit_SSD1306.h"
 #include "akku.h"
 
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
 Akku *akkus[8] = {
     new Akku(PIN_PB5),
@@ -22,59 +24,77 @@ Akku *akkus[8] = {
 // PA2 = SCL (Pin 18)
 
 
-// I2C-Interrupt-Handler (wird bei Anfrage vom Master aufgerufen)
-ISR(TWI0_TWIS_vect) { // Korrekter Vektorname für TWI Slave Interrupt
-    uint8_t status = TWI0.SSTATUS;
-    static uint8_t akkuIndex = 0; // Index muss außerhalb der ISR gespeichert werden
-
-    // 1. **Address Match Interrupt (APIF)**: Master hat uns angesprochen.
-    if (status & TWI_APIF_bm) {
-
-        // **Master liest (DIR = 1)**: Slave muss Daten senden.
-        if (status & TWI_DIR_bm) {
-
-            // Schleife zum Senden aller Akku-Spannungen (Daten)
-            static uint8_t akkuIndex = 0;
-
-            if (status & TWI_AP_bm) { // Adress-Paket (START/REPEATED START)
-                akkuIndex = 0; // Bei neuer Anfrage Startindex zurücksetzen
-            }
-
-            if (akkuIndex < 8) {
-                 // Sende den nächsten Spannungswert (dezimal * 100)
-                TWI0.SDATA = static_cast<uint8_t>(akkus[akkuIndex]->voltage * 100);
-                akkuIndex++;
-
-                // Setze ACK (TWI_ACKACT_bm = 0) und APIF löschen
-                TWI0.SSTATUS = TWI_APIF_bm | TWI_DIF_bm;
-            } else {
-                // Alle Daten gesendet, setze NACK (TWI_ACKACT_bm = 1), um Master zu stoppen.
-                TWI0.SSTATUS = TWI_APIF_bm | TWI_DIF_bm | TWI_ACKACT_bm;
-            }
-
-        // **Master schreibt (DIR = 0)**: Slave empfängt Daten (nicht implementiert).
-        } else {
-            // Hier müssten Sie Logik für den Empfang von Daten einfügen.
-            // Zuerst APIF und DIF löschen, um den nächsten Byte-Transfer zu erlauben
-            TWI0.SSTATUS = TWI_APIF_bm | TWI_DIF_bm;
-        }
-    }
-
-}
-
-
+// // I2C-Interrupt-Handler (wird bei Anfrage vom Master aufgerufen)
+// ISR(TWI0_TWIS_vect) { // Korrekter Vektorname für TWI Slave Interrupt
+//     uint8_t status = TWI0.SSTATUS;
+//     static uint8_t akkuIndex = 0; // Index muss außerhalb der ISR gespeichert werden
+//
+//     // 1. **Address Match Interrupt (APIF)**: Master hat uns angesprochen.
+//     if (status & TWI_APIF_bm) {
+//
+//         // **Master liest (DIR = 1)**: Slave muss Daten senden.
+//         if (status & TWI_DIR_bm) {
+//
+//             // Schleife zum Senden aller Akku-Spannungen (Daten)
+//             static uint8_t akkuIndex = 0;
+//
+//             if (status & TWI_AP_bm) { // Adress-Paket (START/REPEATED START)
+//                 akkuIndex = 0; // Bei neuer Anfrage Startindex zurücksetzen
+//             }
+//
+//             if (akkuIndex < 8) {
+//                  // Sende den nächsten Spannungswert (dezimal * 100)
+//                 TWI0.SDATA = static_cast<uint8_t>(akkus[akkuIndex]->voltage * 100);
+//                 akkuIndex++;
+//
+//                 // Setze ACK (TWI_ACKACT_bm = 0) und APIF löschen
+//                 TWI0.SSTATUS = TWI_APIF_bm | TWI_DIF_bm;
+//             } else {
+//                 // Alle Daten gesendet, setze NACK (TWI_ACKACT_bm = 1), um Master zu stoppen.
+//                 TWI0.SSTATUS = TWI_APIF_bm | TWI_DIF_bm | TWI_ACKACT_bm;
+//             }
+//
+//         // **Master schreibt (DIR = 0)**: Slave empfängt Daten (nicht implementiert).
+//         } else {
+//             // Hier müssten Sie Logik für den Empfang von Daten einfügen.
+//             // Zuerst APIF und DIF löschen, um den nächsten Byte-Transfer zu erlauben
+//             TWI0.SSTATUS = TWI_APIF_bm | TWI_DIF_bm;
+//         }
+//     }
+//
+// }
+unsigned long start = 0;
+bool hasDisplay = true;
 void setup() {
+    Serial.begin(115200);
     // I2C-Setup für Slave
-    PORTMUX.CTRLB |= PORTMUX_TWI0_bm; // I2C auf PA0/PA1 (SDA/SCL)
+    PORTMUX.CTRLB |= PORTMUX_TWI0_bm;
 
     // 2. TWI (I2C) Slave initialisieren
     TWI0.SADDR = SLAVE_ADDRESS << 1;   // Adresse setzen
     TWI0.SCTRLA = TWI_ENABLE_bm;       // TWI-Slave aktivieren
     TWI0.SCTRLB = TWI_SMEN_bm | TWI_DIEN_bm | TWI_APIEN_bm; // Smart-Mode, Daten-Int, Adress-Int
-
+    init_ADC0();
+    init_ADC1();
     for (const Akku *single: akkus) {
         pinMode(single->getPin(), INPUT);
     }
+    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+        delay(500);
+        if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+            Serial.println("Kein Display angeschlossen");
+            hasDisplay = false;
+        }
+    }
+
+
+    if (hasDisplay) {
+        display.setTextSize(0);
+        display.setTextColor(WHITE);
+        display.display();
+        display.clearDisplay();
+    }
+    start = millis();
 }
 
 double teiler = 5000.0f / (220.0f + 5000.0f);
@@ -98,4 +118,20 @@ void readAllBatteryVoltages() {
 
 void loop() {
     readAllBatteryVoltages();
+    if (hasDisplay) {
+        if (millis() - start >= 1000)
+        {
+            start = millis();
+            display.clearDisplay();
+            display.setTextSize(1);
+            display.setTextColor(WHITE);
+            display.setCursor(0, 0);
+            display.print("Akku:");
+            for (Akku *single: akkus) {
+                display.print(single->voltage);
+                display.println("V ");
+            }
+            display.display();
+        }
+    }
 }
